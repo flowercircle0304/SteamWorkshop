@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Workshop Manager</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="wsm-token" content="__TOKEN__">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">⚙</span> Workshop Manager</div>
+  <div class="search"><input id="search" type="search" placeholder="MODを検索（タイトル・ID・タグ）  Ctrl+F"></div>
+  <div class="top-actions">
+    <button id="btn-search" class="ghost" title="このゲームのワークショップを検索して購読">🔍 MODを探す</button>
+    <button id="btn-cleanup" class="ghost" title="残ったファイルや古いバックアップを整理">🧹 お掃除</button>
+    <button id="btn-collection" class="ghost" title="コレクションと照合">コレクション照合</button>
+    <button id="btn-meta" class="ghost" title="Steamから情報を再取得">情報を再取得</button>
+    <button id="steam-pill" class="steam-pill" title="Steamクライアント連携"><span class="dot"></span><span class="txt">Steam 未接続</span></button>
+    <button id="btn-refresh" class="primary">↻ 再スキャン</button>
+    <button id="btn-settings" class="ghost" title="設定・バージョン情報">⚙</button>
+  </div>
+</header>
+
+<div id="update-banner" class="update-banner hidden"></div>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="side-title">ゲーム</div>
+    <ul id="games"></ul>
+    <div class="side-foot" id="libs"></div>
+  </aside>
+
+  <main class="main">
+    <div class="game-header" id="game-header">
+      <div class="gh-body" id="gh-body"></div>
+      <div class="play">
+        <button class="play-btn" id="btn-play" title="Steam でゲームを起動">▶ プレイ</button>
+        <button class="play-opt" id="btn-play-opt" title="起動オプション">▾</button>
+        <div class="play-pop hidden" id="play-pop">
+          <label>起動オプション（引数）<input id="launch-args" placeholder="例: -windowed -dx11"></label>
+          <p class="hint">引数を指定すると、起動時に Steam が確認ダイアログを表示します。</p>
+          <label>起動時に適用するプロファイル<select id="launch-profile"></select></label>
+          <label class="check"><input type="checkbox" id="launch-deploy"> 起動前に有効な MOD をデプロイする</label>
+          <p class="hint" id="launch-deploy-hint"></p>
+          <div class="row"><button class="primary small" id="btn-launch-save">保存</button></div>
+        </div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <div class="chips" id="filters">
+        <button data-f="all" class="chip active">すべて</button>
+        <button data-f="enabled" class="chip">有効</button>
+        <button data-f="disabled" class="chip">無効</button>
+        <button data-f="update" class="chip">更新あり</button>
+        <button data-f="missing" class="chip">未DL</button>
+        <button data-f="unsub" class="chip" title="Steamで購読していないがファイルが残っているもの">未購読</button>
+      </div>
+      <div class="tools">
+        <select id="sort">
+          <option value="order">ロード順</option>
+          <option value="title">名前</option>
+          <option value="size">サイズ</option>
+          <option value="updated">更新日</option>
+          <option value="subs">人気</option>
+        </select>
+        <div class="seg" id="view">
+          <button data-v="list" class="active" title="リスト">☰</button>
+          <button data-v="grid" title="グリッド">▦</button>
+        </div>
+        <button id="btn-undo" class="ghost small" title="元に戻す（Ctrl+Z）" disabled>↶ 元に戻す</button>
+        <button id="btn-autosort" class="ghost small hidden" title="前提MODが先に読み込まれる順番に並べ替えます">依存順に整列</button>
+        <button id="btn-dl-updates" class="primary small hidden">更新を全てDL</button>
+        <button id="btn-all-on" class="ghost small">全て有効</button>
+        <button id="btn-all-off" class="ghost small">全て無効</button>
+      </div>
+    </div>
+    <div id="selbar" class="selbar hidden"></div>
+    <div id="items" class="items list"></div>
+    <div class="statusbar" id="status"></div>
+  </main>
+
+  <section class="detail" id="detail">
+    <div class="tabs">
+      <button data-t="info" class="tab active">詳細</button>
+      <button data-t="steam" class="tab">Steam</button>
+      <button data-t="profiles" class="tab">プロファイル</button>
+      <button data-t="deploy" class="tab">デプロイ</button>
+      <button data-t="export" class="tab">エクスポート</button>
+    </div>
+    <div class="tab-body" id="tab-info"></div>
+    <div class="tab-body hidden" id="tab-steam">
+      <div id="steam-info" class="steam-info"></div>
+      <div class="row">
+        <button id="btn-steam-connect" class="primary small">接続</button>
+        <button id="btn-steam-disconnect" class="ghost small">切断</button>
+      </div>
+      <p class="hint">Steam API の仕組み上、接続中は Steam 上でそのゲームが「実行中（プレイ中）」になります。
+        そのため普段は接続せず、購読・更新・検索などの操作をするときだけ接続し、終わったら約 15 秒で切断します。
+        購読状態と更新の有無は Steam の記録ファイルから読むので、接続しなくても表示されます。</p>
+      <label class="check"><input type="checkbox" id="steam-always"> ゲームを選んだら自動で接続する（そのゲームが「実行中」になります）</label>
+      <label class="check"><input type="checkbox" id="steam-sync"> 有効/無効とロード順を Steam に同期する</label>
+      <p class="hint">Steam の「ローカルで無効化」とロード順の仕組みに対応したゲームで反映されます。</p>
+      <button id="btn-steam-syncnow" class="ghost small">今の状態を Steam に同期</button>
+      <label>IDかURLを入力して購読
+        <div class="row"><input id="sub-id" placeholder="https://steamcommunity.com/sharedfiles/filedetails/?id=..."><button id="btn-sub" class="primary small">購読</button></div>
+      </label>
+    </div>
+    <div class="tab-body hidden" id="tab-profiles">
+      <p class="hint">現在の有効/無効とロード順を名前を付けて保存し、いつでも切り替えられます。</p>
+      <div class="row"><input id="profile-name" placeholder="プロファイル名"><button id="btn-profile-save" class="primary small">保存</button></div>
+      <ul id="profiles" class="plist"></ul>
+      <div class="sect">
+        <div class="sect-title">共有</div>
+        <p class="hint">プロファイルをファイルや共有コードにしてフレンドに渡せます。読み込んだ側で足りない MOD は、まとめて購読できます。</p>
+        <div class="row">
+          <button id="btn-prof-export-all" class="ghost small">全てファイルに保存</button>
+          <label class="file-btn ghost small">ファイルから読み込み<input id="prof-import-file" type="file" accept=".json,.wsmprofile" hidden></label>
+        </div>
+        <textarea id="prof-code" rows="3" placeholder="共有コード（WSM1.…）を貼り付け"></textarea>
+        <div class="row"><button id="btn-prof-import-code" class="primary small">共有コードを読み込む</button></div>
+      </div>
+    </div>
+    <div class="tab-body hidden" id="tab-deploy">
+      <div id="game-sync-box" class="sect-box hidden">
+        <label class="check"><input type="checkbox" id="game-sync"> ゲーム内のMOD設定と連動する</label>
+        <p class="hint"><span id="game-sync-label"></span>と、有効/無効を同期します（並べ替えたことがある場合はロード順も同期します）。
+          ゲームの実行中に変更したときは、ゲームの終了後に反映します。書き込む前に設定ファイルのバックアップ（.wsm-backup）を作ります。</p>
+      </div>
+      <p class="hint">有効なMODをゲームのMODフォルダへ配置します（ジャンクションなら容量を消費しません）。再デプロイ時は本ツールが配置したものだけを入れ替えます。</p>
+      <label>デプロイ先フォルダ<input id="dep-path" placeholder="例: D:\Games\MyGame\Mods"></label>
+      <label>方式
+        <select id="dep-mode"><option value="junction">ジャンクション（推奨）</option><option value="copy">コピー</option></select>
+      </label>
+      <label>フォルダ名
+        <select id="dep-naming">
+          <option value="id">ワークショップID</option>
+          <option value="order_id">ロード順_ID</option>
+          <option value="title">タイトル</option>
+          <option value="order_title">ロード順_タイトル</option>
+        </select>
+      </label>
+      <div class="row">
+        <button id="btn-dep-save" class="ghost small">設定を保存</button>
+        <button id="btn-dep-open" class="ghost small">フォルダを開く</button>
+      </div>
+      <div class="row">
+        <button id="btn-deploy" class="primary">デプロイ</button>
+        <button id="btn-undeploy" class="danger">取り外し</button>
+      </div>
+      <div id="dep-result" class="dep-result"></div>
+    </div>
+    <div class="tab-body hidden" id="tab-export">
+      <p class="hint">MODリストを共有・バックアップできます。</p>
+      <button id="btn-copy-ids" class="ghost">有効なIDをコピー</button>
+      <button id="btn-copy-links" class="ghost">ワークショップURLをコピー</button>
+      <button id="btn-export-json" class="ghost">JSONで保存</button>
+      <label class="file-btn ghost">JSONから読み込み<input id="import-json" type="file" accept=".json" hidden></label>
+    </div>
+  </section>
+</div>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head"><h3>コレクション照合</h3><button id="modal-close" class="ghost small">✕</button></div>
+    <p class="hint">ワークショップのコレクションURLかIDを入力すると、未購読のアイテムを確認できます。</p>
+    <div class="row"><input id="col-id" placeholder="https://steamcommunity.com/sharedfiles/filedetails/?id=..."><button id="btn-col" class="primary small">照合</button></div>
+    <div id="col-result"></div>
+  </div>
+</div>
+
+<div id="missing-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head"><h3 id="missing-title">足りない MOD</h3><button class="ghost small" data-close-missing>✕</button></div>
+    <p class="hint" id="missing-hint"></p>
+    <div id="missing-list"></div>
+  </div>
+</div>
+
+<div id="diff-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head"><h3 id="diff-title">比較</h3><button class="ghost small" data-close>✕</button></div>
+    <div id="diff-body"></div>
+    <div class="row" style="justify-content:flex-end"><button class="ghost" data-close>あとで</button><button class="primary" id="diff-apply">適用する</button></div>
+  </div>
+</div>
+
+<div id="search-modal" class="modal hidden">
+  <div class="modal-card wide">
+    <div class="modal-head"><h3 id="ws-title">ワークショップを探す</h3><button class="ghost small" data-close>✕</button></div>
+    <div class="row">
+      <input id="ws-q" placeholder="キーワード（空欄なら並び順で表示）">
+      <select id="ws-sort" style="width:auto">
+        <option value="trend">人気（今週）</option><option value="subs">購読数</option>
+        <option value="vote">評価</option><option value="new">新着</option><option value="updated">最近更新</option>
+      </select>
+      <button class="primary small" id="ws-go">検索</button>
+    </div>
+    <p class="hint" id="ws-count"></p>
+    <div id="ws-results" class="ws-grid"></div>
+    <div class="row" style="justify-content:center"><button class="ghost" id="ws-more">もっと見る</button></div>
+  </div>
+</div>
+
+<div id="cleanup-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head"><h3>🧹 お掃除</h3><button class="ghost small" data-close>✕</button></div>
+    <p class="hint">削除するフォルダはごみ箱へ移動するので、ごみ箱から元に戻せます。購読中の MOD は購読解除で整理してください。</p>
+    <div id="cl-body"></div>
+  </div>
+</div>
+
+<div id="settings-modal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-head"><h3>⚙ 設定</h3><button class="ghost small" data-close>✕</button></div>
+    <p>Workshop Manager <b id="set-version"></b> ・ <span id="tool-update" class="hint"></span></p>
+    <pre id="tool-notes" class="tool-notes hidden"></pre>
+    <label class="check"><input type="checkbox" id="set-notify"> MOD の更新を Windows の通知で知らせる（30 分ごとに確認）</label>
+    <div class="row"><button class="ghost small" id="set-test-notify">通知をテスト</button></div>
+    <label class="check"><input type="checkbox" id="set-autobackup"> 更新が見つかったら今の版を自動でバックアップする</label>
+    <label>ツールの更新の確認先（通常は空欄のままで OK）<input id="set-update-url"></label>
+    <div class="row"><button class="ghost small" id="set-check">今すぐ確認</button><button class="primary small" id="set-save">保存</button></div>
+    <p class="hint">ショートカット: Ctrl+Z 元に戻す ／ Ctrl+A 表示中をすべて選択 ／ Ctrl・Shift+クリック 複数選択 ／ Space 有効/無効 ／ Esc 選択解除</p>
+  </div>
+</div>
+
+<div id="toasts"></div>
+<script src="/app.js"></script>
+<script src="/features.js"></script>
+</body>
+</html>

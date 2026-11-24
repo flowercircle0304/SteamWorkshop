@@ -1,0 +1,13 @@
+# ビルド成果物
+build/
+dist/
+release/
+*.spec
+__pycache__/
+*.pyc
+
+# 個人の設定・キャッシュ・バックアップ
+data/
+
+# エディタ・ツールの設定
+.claude/
