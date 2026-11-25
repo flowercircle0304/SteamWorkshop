@@ -34,7 +34,7 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # exe化時: 同梱ファイルは一時展開先、設定データはexeの隣に置く
 ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 STATIC = (Path(getattr(sys, "_MEIPASS", ROOT)) / "static").resolve()
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 APP_NAME = "Workshop Manager"
 # 設定の保存先: exe の隣に data フォルダがあればそこ（ポータブル利用）、無ければ %APPDATA%\WorkshopManager
 if not FROZEN or (ROOT / "data").is_dir() or not os.environ.get("APPDATA"):
@@ -600,7 +600,7 @@ def game_write(appid: str) -> dict:
     g = game_state(appid)
     if not ad or g.get("gameSync") is False:
         return {"supported": bool(ad), "written": 0}
-    if appid in running_apps():
+    if game_running(appid):
         g["gamePending"] = True
         save_json(STATE_FILE, state)
         return {"supported": True, "pending": True, "state": g}
@@ -702,6 +702,75 @@ def running_apps() -> set[str]:
 def our_appid() -> str | None:
     w = steam.worker
     return w.appid if w and w.alive() else None
+
+
+def game_dir(appid: str) -> Path | None:
+    for lib in library_paths():
+        mf = lib / "steamapps" / f"appmanifest_{appid}.acf"
+        if mf.exists():
+            d = ci(ci(read_vdf(mf), "AppState") or {}, "installdir")
+            if d:
+                return lib / "steamapps" / "common" / d
+    return None
+
+
+def process_in_dir(folder: Path) -> bool:
+    """folder の中の exe が動いているか"""
+    if sys.platform != "win32" or not folder:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.windll.kernel32
+    psapi = ctypes.windll.psapi
+    arr = (wintypes.DWORD * 4096)()
+    got = wintypes.DWORD()
+    if not psapi.EnumProcesses(arr, ctypes.sizeof(arr), ctypes.byref(got)):
+        return False
+    prefix = str(folder.resolve()).lower().rstrip("\\") + "\\"
+    buf = ctypes.create_unicode_buffer(1024)
+    for pid in arr[:got.value // ctypes.sizeof(wintypes.DWORD)]:
+        h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            continue
+        try:
+            n = wintypes.DWORD(len(buf))
+            if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)) and buf.value.lower().startswith(prefix):
+                return True
+        finally:
+            k32.CloseHandle(h)
+    return False
+
+
+def game_running(appid: str) -> bool:
+    """ゲーム本体が実行中か。このツールの Steam 連携も Steam 上は「実行中」になるので、
+    その場合はゲームのフォルダの exe が動いているかで判断する"""
+    if appid not in running_apps():
+        return False
+    if our_appid() != appid:
+        return True
+    d = game_dir(appid)
+    return process_in_dir(d) if d else False
+
+
+def flush_pending() -> list[str]:
+    """ゲームの終了を待っていた設定の書き込みを行う"""
+    done = []
+    for appid, g in list(state.get("games", {}).items()):
+        if isinstance(g, dict) and g.get("gamePending") and not game_running(appid):
+            try:
+                with lock:
+                    if game_write(appid).get("written") is not None:
+                        done.append(appid)
+            except Exception:  # noqa: BLE001
+                pass
+    return done
+
+
+def r_running(_b):
+    flushed = flush_pending()
+    return {"running": sorted(running_apps()), "ours": our_appid(), "flushed": flushed,
+            "states": {a: game_state(a) for a in flushed}}
 
 
 def guard_running(appid: str) -> None:
@@ -813,7 +882,7 @@ def r_backup_create(b):
 
 def r_backup_restore(b):
     appid = str(b["appid"])
-    if appid in running_apps():
+    if game_running(appid):
         raise RuntimeError("ゲームの実行中は復元できません。ゲームを終了してください")
     it = find_game_item(appid, b["id"])
     backups.restore(appid, it, str(b["key"]), (meta_cache.get(it["id"]) or {}).get("title") or "")
@@ -824,7 +893,7 @@ def r_cleanup_delete(b):
     """購読していないアイテムのフォルダをごみ箱へ送る"""
     appid = str(b["appid"])
     ids = [str(i) for i in b.get("ids") or []]
-    if appid in running_apps():
+    if game_running(appid):
         raise RuntimeError("ゲームの実行中は削除できません。ゲームを終了してください")
     # 購読状態は Steam の記録から判定する（Steam に接続しない）
     st = {i["id"]: i for i in game_items(appid)}
@@ -929,7 +998,7 @@ STEAM_ROUTES = {
     "/api/steam/disconnect": r_steam_disconnect,
     "/api/steam/state": lambda _b: steam.status(),
     "/api/launch": r_launch,
-    "/api/running": lambda _b: {"running": sorted(running_apps()), "ours": our_appid()},
+    "/api/running": r_running,
 }
 
 

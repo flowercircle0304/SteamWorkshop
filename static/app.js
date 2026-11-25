@@ -894,6 +894,11 @@ $('#btn-launch-save').onclick = async () => {
 async function pollRunning() {
   try {
     const r = await api('running');
+    for (const a of r.flushed || []) {  // ゲーム終了後に、保留していた設定を書き込んだ
+      const g = S.games.find(x => x.appid === a);
+      if (g && r.states?.[a]) { g.state = r.states[a]; if (a === S.cur) renderAll(); }
+      toast(`${g?.name || a}: 保留していた変更をゲームの設定に反映しました`, 'ok');
+    }
     const running = r.running.filter(id => id !== r.ours);
     if (S.steam.connected && r.ours !== S.steam.appid) { S.steam.connected = false; renderSteam(); renderDetail(); }
     if (running.join() !== S.running.join()) {
