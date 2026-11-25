@@ -48,7 +48,20 @@ const hasUpdate = it => {
   if (st || it.steamChecked) return false;  // Steam の記録・状態があればそれに従う（Web の日時は説明文の編集やベータ版向けの更新でも変わるため）
   const m = S.meta[it.id]; return it.installed && m?.time_updated && it.timeupdated && m.time_updated > it.timeupdated + 60;
 };
-const isUnsub = it => { const st = sst(it); return st ? !st.subscribed : (it.installed && it.subscribed === false); };
+const isUnsub = it => { const st = sst(it); return st ? !st.subscribed : (it.ghost || (it.installed && it.subscribed === false)); };
+
+// 適用中のプロファイルにあるのに、このPCに無い（未購読の）MOD を一覧に仮の行として加える
+// → プロファイルの MOD 数と一覧の数が一致し、そこから購読できる
+function addProfileGhosts(g) {
+  if (!g) return;
+  g.items = g.items.filter(i => !i.ghost);
+  const p = g.state.profiles?.[g.state.appliedProfile];
+  if (!p?.mods) return;
+  const have = new Set(g.items.map(i => i.id));
+  for (const m of p.mods) {
+    if (!have.has(m.id)) g.items.push({ id: m.id, appid: g.appid, path: null, installed: false, subscribed: false, ghost: true, size: 0, timeupdated: 0, timetouched: 0 });
+  }
+}
 
 function orderedIds(g) {
   const ids = new Set(g.items.map(i => i.id));
@@ -62,6 +75,7 @@ async function load(keepSel = true) {
   try {
     const d = await api('scan');
     S.games = d.games;
+    S.games.forEach(addProfileGhosts);
     Object.assign(S.meta, d.meta);
     $('#libs').innerHTML = 'Steam: ' + esc(d.steamPath || '未検出') + '<br>ライブラリ: ' + d.libraries.length;
     if (!game()) S.cur = S.games[0]?.appid || null;
@@ -170,8 +184,9 @@ function renderItems() {
         ? '<span class="badge update" title="ゲームの終了後に更新します">⏳ 終了後に更新</span>'
         : `<span class="badge update clickable" data-update="${it.id}" title="クリックで更新">更新あり ⬇</span>`) : '',
       st?.downloading ? `<span class="badge dl">DL中 ${Math.round((st.progress || 0) * 100)}%</span>` : '',
-      !it.installed && !st?.downloading ? '<span class="badge missing">未DL</span>' : '',
-      isUnsub(it) ? '<span class="badge unsub">未購読</span>' : '',
+      it.ghost && !st?.subscribed ? `<span class="badge missing clickable" data-ghostsub="${it.id}" title="プロファイル「${esc(g.state.appliedProfile || '')}」に入っていますが、このPCにはありません。クリックで購読">未導入・購読する</span>` : '',
+      !it.installed && !st?.downloading && !(it.ghost && !st?.subscribed) ? '<span class="badge missing">未DL</span>' : '',
+      isUnsub(it) && !it.ghost ? '<span class="badge unsub">未購読</span>' : '',
       st?.disabledLocally ? '<span class="badge sdis">Steamで無効</span>' : '',
       m.ok === false ? '<span class="badge removed">削除済み</span>' : '',
       depBadge(g, it),
@@ -243,9 +258,10 @@ function renderSide() {
     const mods = profileMods(g, p);
     const on = mods.filter(m => m.enabled);
     const miss = missingMods(g, mods).length;
+    const drift = profileDrift(g, p).added.length;
     return `
     <li class="${miss ? 'warn' : ''}"><div class="pn">${esc(n)}${p.imported ? '<span class="ptag">共有</span>' : ''}
-        <small>${fmtDate(p.saved)} ・ 有効 ${on.length} / ${mods.length} 件${miss ? ` ・ 不足 ${miss} 件` : ''}</small></div>
+        <small>${fmtDate(p.saved)} ・ 有効 ${on.length} / ${mods.length} 件${miss ? ` ・ 不足 ${miss} 件` : ''}${drift ? ` ・ <span title="このプロファイルを保存したあとに追加した MOD です。共有する前に上書き保存すると含まれます">保存後に追加 ${drift} 件</span>` : ''}</small></div>
       <div class="pacts">
         <button class="primary small" data-papply="${esc(n)}">適用</button>
         <button class="ghost small" data-pdiff="${esc(n)}" title="今の状態との違いを表示">比較</button>
@@ -554,7 +570,7 @@ async function profile(action, name, extra = {}) {
   if (action === 'apply') pushUndo(g, `プロファイル「${name}」の適用`);
   try {
     const d = await api('profile', { appid: g.appid, action, name, ...extra });
-    g.state = d.state; renderAll();
+    g.state = d.state; addProfileGhosts(g); renderAll();
     toast({ save: '保存しました', apply: `「${name}」を適用しました`, delete: '削除しました', rename: '名前を変更しました' }[action], 'ok');
     if (action === 'apply') {
       await gameWrite(g, true);
@@ -579,6 +595,7 @@ $('#profiles').addEventListener('click', async e => {
   if (t.dataset.pdiff) showDiff(g, t.dataset.pdiff);
   if (pdel && confirm(`プロファイル「${pdel}」を削除しますか？`)) profile('delete', pdel);
   if (pren) { const nn = prompt('新しい名前', pren); if (nn && nn.trim() !== pren) profile('rename', pren, { newName: nn.trim() }); }
+  if ((pfile || pcode) && !(await confirmProfileFresh(g, pfile || pcode))) return;
   if (pfile) download(`${safeFile(g.name)}_${safeFile(pfile)}.wsmprofile`, JSON.stringify(exportData(g, [pfile]), null, 2));
   if (pcode) {
     const code = await encodeShare(g, pcode);
@@ -591,6 +608,22 @@ $('#profiles').addEventListener('click', async e => {
     }
   }
 });
+// プロファイルを保存したあとに増えた/無くなった MOD
+function profileDrift(g, p) {
+  if (p.imported) return { added: [] };  // もらったプロファイルは自分の MOD と比べない
+  const ids = new Set(profileMods(g, p).map(m => m.id));
+  const now = g.items.filter(i => !i.ghost && i.installed);
+  return { added: now.filter(i => !ids.has(i.id)).map(i => i.id) };
+}
+async function confirmProfileFresh(g, name) {
+  const { added } = profileDrift(g, g.state.profiles[name]);
+  if (!added.length) return true;
+  const list = added.slice(0, 8).map(id => '・' + titleOf({ id })).join('\n') + (added.length > 8 ? `\n…ほか ${added.length - 8} 件` : '');
+  if (confirm(`「${name}」を保存したあとに追加した MOD が ${added.length} 件あり、このプロファイルには入っていません。\n${list}\n\n今の状態で上書き保存してから共有しますか？\n（キャンセルすると保存済みの内容のまま共有します）`)) {
+    await profile('save', name, { mods: orderedIds(g) });
+  }
+  return true;
+}
 $('#btn-prof-export-all').onclick = () => {
   const g = game(); const names = Object.keys(g.state.profiles);
   if (!names.length) { toast('保存されたプロファイルがありません', 'err'); return; }
@@ -678,6 +711,12 @@ function showMissing(list, hint) {
         <button class="ghost small" data-mopen="${m.id}">ページ</button></div>`; }).join('');
   $('#missing-modal').classList.remove('hidden');
 }
+$('#items').addEventListener('click', async e => {
+  const b = e.target.closest('[data-ghostsub]'); if (!b) return;
+  e.stopPropagation();
+  const id = b.dataset.ghostsub;
+  if (await steamAction('subscribe', [id])) { waitForInstall(game().appid, [id]); toast('購読しました。ダウンロードが終わると自動で有効にしてゲームの設定に反映します', 'ok'); }
+}, true);
 $('#missing-modal').addEventListener('click', async e => {
   if (e.target.id === 'missing-modal' || e.target.closest('[data-close-missing]')) { $('#missing-modal').classList.add('hidden'); return; }
   const o = e.target.closest('[data-mopen]'); if (o) openTarget(`steam://url/CommunityFilePage/${o.dataset.mopen}`);
@@ -685,7 +724,8 @@ $('#missing-modal').addEventListener('click', async e => {
   const ids = b.dataset.msub.split(',');
   b.disabled = true;
   if (await steamAction('subscribe', ids)) {
-    toast(`${ids.length} 件を購読しました。ダウンロードを待っています…`, 'ok');
+    waitForInstall(game().appid, ids);
+    toast(`${ids.length} 件を購読しました。ダウンロードが終わると自動でゲームの設定に反映します`, 'ok');
     const sel = ids.length > 1 ? '#missing-list [data-msub]' : `#missing-list [data-msub="${ids[0]}"]`;
     $$(sel).forEach(x => { x.disabled = true; x.textContent = '購読済み'; });
   } else b.disabled = false;

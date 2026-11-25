@@ -34,7 +34,7 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # exe化時: 同梱ファイルは一時展開先、設定データはexeの隣に置く
 ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 STATIC = (Path(getattr(sys, "_MEIPASS", ROOT)) / "static").resolve()
-VERSION = "1.6.1"
+VERSION = "1.6.2"
 APP_NAME = "Workshop Manager"
 # 設定の保存先: exe の隣に data フォルダがあればそこ（ポータブル利用）、無ければ %APPDATA%\WorkshopManager
 if not FROZEN or (ROOT / "data").is_dir() or not os.environ.get("APPDATA"):
@@ -571,6 +571,7 @@ def r_profile(b):
             g["order"] = [m["id"] for m in p["mods"]]
             g["disabled"] = sorted((current | set(g["order"])) - enabled)
             g["orderCustom"] = bool(p.get("customOrder"))
+            g["appliedProfile"] = name  # 足りない MOD を一覧に表示するため
         else:  # 旧形式
             g["disabled"], g["order"] = list(p.get("disabled", [])), list(p.get("order", []))
     elif action == "rename":
@@ -578,9 +579,14 @@ def r_profile(b):
         if not new or name not in g["profiles"]:
             raise ValueError("名前を変更できません")
         if new != name:
-            g["profiles"][unique_name(g["profiles"], new)] = g["profiles"].pop(name)
+            new = unique_name(g["profiles"], new)
+            g["profiles"][new] = g["profiles"].pop(name)
+            if g.get("appliedProfile") == name:
+                g["appliedProfile"] = new
     elif action == "delete":
         g["profiles"].pop(name, None)
+        if g.get("appliedProfile") == name:
+            g.pop("appliedProfile", None)
     else:
         raise ValueError("unknown action")
     save_json(STATE_FILE, state)

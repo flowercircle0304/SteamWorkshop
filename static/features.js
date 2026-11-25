@@ -282,11 +282,15 @@ function showDiff(g, name) {
   const list = (ids, cls) => ids.map(id => `<li class="${cls}">${esc(titleOf({ id }))}</li>`).join('');
   const none = !d.turnOn.length && !d.turnOff.length && !d.missing.length && !d.orderChanged;
   $('#diff-title').textContent = `「${name}」と今の状態の比較`;
-  $('#diff-body').innerHTML = none ? '<p>今の状態と同じです。適用しても何も変わりません。</p>' : `
+  const mods = profileMods(g, g.state.profiles[name]);
+  const have = mods.filter(m => g.items.some(i => i.id === m.id && i.installed)).length;
+  const summary = `<p class="hint">このプロファイル: ワークショップのアイテム ${mods.length} 件（有効 ${mods.filter(m => m.enabled).length} 件）・このPCにあるもの ${have} 件${d.missing.length ? `・足りないもの ${d.missing.length} 件` : ''}
+    ${g.adapter ? '<br>※ 1 つのアイテムに複数の MOD が入っていることがあるため、ゲーム内の MOD 数とは一致しないことがあります。' : ''}</p>`;
+  $('#diff-body').innerHTML = summary + (none ? '<p>今の状態と同じです。適用しても何も変わりません。</p>' : `
     ${d.turnOn.length ? `<div class="sect-title">有効になる（${d.turnOn.length}）</div><ul class="difflist">${list(d.turnOn, 'on')}</ul>` : ''}
     ${d.turnOff.length ? `<div class="sect-title">無効になる（${d.turnOff.length}）</div><ul class="difflist">${list(d.turnOff, 'off')}</ul>` : ''}
     ${d.missing.length ? `<div class="sect-title">インストールされていない（${d.missing.length}）</div><ul class="difflist">${list(d.missing, 'miss')}</ul><p class="hint">適用後に「まとめて購読」できます。</p>` : ''}
-    ${d.orderChanged ? '<p class="hint">ロード順も変わります。</p>' : ''}`;
+    ${d.orderChanged ? '<p class="hint">ロード順も変わります。</p>' : ''}`);
   $('#diff-apply').dataset.name = name;
   $('#diff-modal').classList.remove('hidden');
 }
@@ -553,6 +557,44 @@ document.addEventListener('keydown', e => {
   }
 });
 
+// ======================================================== 足りない MOD のダウンロード待ち → 有効にしてゲームに反映
+// 購読しただけではまだフォルダが無いので、ゲームの設定に書けない。ダウンロードが終わったら書く
+const profWait = (() => { try { return JSON.parse(localStorage.getItem('wsm-prof-wait') || '{}'); } catch { return {}; } })();
+const saveProfWait = () => localStorage.setItem('wsm-prof-wait', JSON.stringify(profWait));
+let profWaitTimer = null, profWaitBusy = false;
+function waitForInstall(appid, ids) {
+  profWait[appid] = [...new Set([...(profWait[appid] || []), ...ids])];
+  saveProfWait(); scheduleProfWait(3000);
+}
+function scheduleProfWait(ms = 6000) {
+  clearTimeout(profWaitTimer);
+  if (Object.values(profWait).some(a => a.length)) profWaitTimer = setTimeout(checkProfWait, ms);
+}
+async function checkProfWait() {
+  if (profWaitBusy) return;
+  profWaitBusy = true;
+  try {
+    const d = await api('scan');
+    for (const [appid, ids] of Object.entries(profWait)) {
+      const sg = d.games.find(x => x.appid === appid);
+      const done = sg ? ids.filter(id => sg.items.some(i => i.id === id && i.installed)) : [];
+      if (!done.length) continue;
+      profWait[appid] = ids.filter(id => !done.includes(id)); saveProfWait();
+      await load();  // 一覧を最新にする
+      const g = S.games.find(x => x.appid === appid); if (!g) continue;
+      // プロファイルで有効だった MOD なので有効にする（ゲームが先に見つけて無効で登録していても）
+      const dis = g.state.disabled.filter(id => !done.includes(id));
+      if (dis.length !== g.state.disabled.length) g.state = (await api('update', { appid, disabled: dis })).state;
+      await gameWrite(g);
+      if (steamSync(g) && S.steam.connected && S.steam.appid === appid) pushSteam(g);
+      renderAll();
+      const left = profWait[appid].length;
+      toast(`${g.name}: ${done.length} 件のダウンロードが終わり、有効にしてゲームの設定に反映しました${left ? `（残り ${left} 件）` : ''}`, 'ok');
+    }
+  } catch { /* 次回再試行 */ }
+  finally { profWaitBusy = false; scheduleProfWait(); }
+}
+
 // ======================================================== 初期化
 restoreQueue();
 renderUndo();
@@ -560,6 +602,7 @@ pollRunning().finally(async () => {
   await load();
   runPendingQueue();
   setTimeout(checkToolUpdate, 4000);
+  scheduleProfWait(8000);
   setTimeout(checkModUpdates, 60 * 1000);
   setInterval(checkModUpdates, 30 * 60 * 1000);
 });
