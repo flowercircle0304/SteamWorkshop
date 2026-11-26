@@ -40,7 +40,17 @@ async function api(path, body = {}) {
 
 // ---------------------------------------------------------------- data
 const game = () => S.games.find(g => g.appid === S.cur);
-const titleOf = it => S.meta[it.id]?.title || `#${it.id}`;
+const titleOf = it => S.meta[it.id]?.title || profTitle(it.id) || `#${it.id}`;
+// プロファイルに残っている名前（Steam から消えた MOD でも名前が分かる）
+function profTitle(id) {
+  for (const g of S.games || []) for (const p of Object.values(g.state?.profiles || {})) {
+    const m = p.mods?.find(x => x.id === id && x.title); if (m) return m.title;
+  }
+  return '';
+}
+// Steam で入手できない MOD（作者が削除・非公開にした、または Steam により公開停止）
+const unavailable = id => S.meta[id]?.ok === false;
+const unavailReason = id => (S.meta[id]?.banned ? 'Steam により公開停止されています' : '作者が削除したか、非公開にしています');
 const isOn = (g, id) => !g.state.disabled.includes(id);
 const sst = it => (S.steam.appid === it.appid ? S.steam.items[it.id] : null);  // Steamクライアント上の状態
 const hasUpdate = it => {
@@ -184,11 +194,12 @@ function renderItems() {
         ? '<span class="badge update" title="ゲームの終了後に更新します">⏳ 終了後に更新</span>'
         : `<span class="badge update clickable" data-update="${it.id}" title="クリックで更新">更新あり ⬇</span>`) : '',
       st?.downloading ? `<span class="badge dl">DL中 ${Math.round((st.progress || 0) * 100)}%</span>` : '',
-      it.ghost && !st?.subscribed ? `<span class="badge missing clickable" data-ghostsub="${it.id}" title="プロファイル「${esc(g.state.appliedProfile || '')}」に入っていますが、このPCにはありません。クリックで購読">未導入・購読する</span>` : '',
-      !it.installed && !st?.downloading && !(it.ghost && !st?.subscribed) ? '<span class="badge missing">未DL</span>' : '',
+      it.ghost && unavailable(it.id) ? `<span class="badge removed" title="プロファイル「${esc(g.state.appliedProfile || '')}」に入っていますが、Steam で見つかりません（${unavailReason(it.id)}）。入手できません">Steamで見つかりません</span>` : '',
+      it.ghost && !unavailable(it.id) && !st?.subscribed ? `<span class="badge missing clickable" data-ghostsub="${it.id}" title="プロファイル「${esc(g.state.appliedProfile || '')}」に入っていますが、このPCにはありません。クリックで購読">未導入・購読する</span>` : '',
+      !it.installed && !st?.downloading && !it.ghost ? '<span class="badge missing">未DL</span>' : '',
       isUnsub(it) && !it.ghost ? '<span class="badge unsub">未購読</span>' : '',
       st?.disabledLocally ? '<span class="badge sdis">Steamで無効</span>' : '',
-      m.ok === false ? '<span class="badge removed">削除済み</span>' : '',
+      m.ok === false && !it.ghost ? `<span class="badge removed" title="Steam で見つかりません（${unavailReason(it.id)}）。このPCにあるファイルは使えますが、プロファイルを共有しても相手は入手できません">公開終了</span>` : '',
       depBadge(g, it),
     ].join('');
     const prog = st?.downloading ? `<div class="progress"><i style="width:${Math.round((st.progress || 0) * 100)}%"></i></div>` : '';
@@ -259,9 +270,10 @@ function renderSide() {
     const on = mods.filter(m => m.enabled);
     const miss = missingMods(g, mods).length;
     const drift = profileDrift(g, p).added.length;
+    const gone = mods.filter(m => unavailable(m.id)).length;
     return `
     <li class="${miss ? 'warn' : ''}"><div class="pn">${esc(n)}${p.imported ? '<span class="ptag">共有</span>' : ''}
-        <small>${fmtDate(p.saved)} ・ 有効 ${on.length} / ${mods.length} 件${miss ? ` ・ 不足 ${miss} 件` : ''}${drift ? ` ・ <span title="このプロファイルを保存したあとに追加した MOD です。共有する前に上書き保存すると含まれます">保存後に追加 ${drift} 件</span>` : ''}</small></div>
+        <small>${fmtDate(p.saved)} ・ 有効 ${on.length} / ${mods.length} 件${miss ? ` ・ 不足 ${miss} 件` : ''}${drift ? ` ・ <span title="このプロファイルを保存したあとに追加した MOD です。共有する前に上書き保存すると含まれます">保存後に追加 ${drift} 件</span>` : ''}${gone ? ` ・ <span class="gone" title="Steam で削除・非公開・公開停止になっていて、入手できない MOD です">Steamで見つからない ${gone} 件</span>` : ''}</small></div>
       <div class="pacts">
         <button class="primary small" data-papply="${esc(n)}">適用</button>
         <button class="ghost small" data-pdiff="${esc(n)}" title="今の状態との違いを表示">比較</button>
@@ -575,7 +587,9 @@ async function profile(action, name, extra = {}) {
     if (action === 'apply') {
       await gameWrite(g, true);
       if (steamSync(g)) pushSteam(g);
-      const miss = missingMods(g, profileMods(g, g.state.profiles[name]));
+      let miss = missingMods(g, profileMods(g, g.state.profiles[name]));
+      const unk = miss.map(m => m.id).filter(id => !S.meta[id]);
+      if (unk.length) { try { Object.assign(S.meta, await api('meta', { ids: unk })); renderAll(); } catch { /* オフライン */ } }
       if (miss.length) showMissing(miss, `「${name}」で有効になっている MOD のうち ${miss.length} 件がインストールされていません。`);
     }
     return d;
@@ -616,6 +630,8 @@ function profileDrift(g, p) {
   return { added: now.filter(i => !ids.has(i.id)).map(i => i.id) };
 }
 async function confirmProfileFresh(g, name) {
+  const gone = profileMods(g, g.state.profiles[name]).filter(m => unavailable(m.id));
+  if (gone.length) toast(`「${name}」の ${gone.length} 件は Steam で見つからない（削除・非公開・公開停止）ため、共有した相手は入手できません: ${gone.slice(0, 3).map(m => titleOf(m)).join('、')}${gone.length > 3 ? ' ほか' : ''}`, 'err');
   const { added } = profileDrift(g, g.state.profiles[name]);
   if (!added.length) return true;
   const list = added.slice(0, 8).map(id => '・' + titleOf({ id })).join('\n') + (added.length > 8 ? `\n…ほか ${added.length - 8} 件` : '');
@@ -646,7 +662,7 @@ function exportData(g, names) {
   return {
     format: 'wsm-profiles', version: 1, app: g.appid, game: g.name, exported: new Date().toISOString(),
     profiles: names.map(n => ({
-      name: n, customOrder: !!g.state.profiles[n].customOrder, mods: profileMods(g, g.state.profiles[n]).map(m => ({ id: m.id, title: S.meta[m.id]?.title || '', enabled: m.enabled })),
+      name: n, customOrder: !!g.state.profiles[n].customOrder, mods: profileMods(g, g.state.profiles[n]).map(m => ({ id: m.id, title: S.meta[m.id]?.title || m.title || '', enabled: m.enabled })),
     })),
   };
 }
@@ -701,18 +717,25 @@ async function importProfiles(d) {
 
 // 足りない MOD の一覧（購読ボタン付き）
 function showMissing(list, hint) {
-  $('#missing-hint').textContent = hint + ' 購読すると Steam がダウンロードします。';
-  const ids = list.map(m => m.id);
-  $('#missing-list').innerHTML = `<p><button class="primary small" data-msub="${ids.join(',')}">まとめて購読 (${ids.length})</button></p>` +
-    list.map(m => { const meta = S.meta[m.id] || {}; return `
+  const ok = list.filter(m => !unavailable(m.id)), gone = list.filter(m => unavailable(m.id));
+  $('#missing-hint').textContent = hint + (ok.length ? ' 購読すると Steam がダウンロードします。' : '');
+  const ids = ok.map(m => m.id);
+  const row = (m, btn) => { const meta = S.meta[m.id] || {}; return `
       <div class="col-row"><img src="${esc(meta.preview || PLACEHOLDER)}" onerror="this.src='${PLACEHOLDER}'">
-        <span class="t">${esc(meta.title || m.title || '#' + m.id)}${meta.ok === false ? ' <span class="badge removed">公開終了</span>' : ''}</span>
-        <button class="primary small" data-msub="${m.id}">購読</button>
-        <button class="ghost small" data-mopen="${m.id}">ページ</button></div>`; }).join('');
+        <span class="t">${esc(meta.title || m.title || titleOf(m))}${unavailable(m.id) ? `<br><small class="hint">${unavailReason(m.id)}</small>` : ''}</span>
+        ${btn}<button class="ghost small" data-mopen="${m.id}">ページ</button></div>`; };
+  $('#missing-list').innerHTML =
+    (ids.length ? `<p><button class="primary small" data-msub="${ids.join(',')}">まとめて購読 (${ids.length})</button></p>` : '') +
+    ok.map(m => row(m, `<button class="primary small" data-msub="${m.id}">購読</button>`)).join('') +
+    (gone.length ? `<div class="sect-title gone">Steam で見つからないため入手できない（${gone.length}）</div>
+      <p class="hint">作者が削除・非公開にしたか、Steam により公開停止になった MOD です。プロファイルを共有した人の PC には残っていても、ほかの人はダウンロードできません。このため MOD の数が ${gone.length} 件少なくなります。</p>` +
+      gone.map(m => row(m, '<span class="badge removed">入手不可</span>')).join('') : '');
   $('#missing-modal').classList.remove('hidden');
+  if (gone.length) toast(`${gone.length} 件の MOD は Steam で見つからない（削除・非公開・公開停止）ため入手できません`, 'err');
 }
 $('#items').addEventListener('click', async e => {
   const b = e.target.closest('[data-ghostsub]'); if (!b) return;
+  if (unavailable(b.dataset.ghostsub)) return;
   e.stopPropagation();
   const id = b.dataset.ghostsub;
   if (await steamAction('subscribe', [id])) { waitForInstall(game().appid, [id]); toast('購読しました。ダウンロードが終わると自動で有効にしてゲームの設定に反映します', 'ok'); }

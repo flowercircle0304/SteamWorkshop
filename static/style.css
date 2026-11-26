@@ -250,3 +250,6 @@ a.mini { font-size: 11px; color: var(--accent); font-weight: 400; }
 
 .update-banner .grow { flex: 1; }
 .tool-notes { white-space: pre-wrap; max-height: 160px; overflow: auto; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font-size: 12px; margin: 0 0 8px; }
+
+/* Steam で見つからない MOD */
+.gone { color: #ff9b94; }

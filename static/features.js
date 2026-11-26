@@ -284,12 +284,15 @@ function showDiff(g, name) {
   $('#diff-title').textContent = `「${name}」と今の状態の比較`;
   const mods = profileMods(g, g.state.profiles[name]);
   const have = mods.filter(m => g.items.some(i => i.id === m.id && i.installed)).length;
-  const summary = `<p class="hint">このプロファイル: ワークショップのアイテム ${mods.length} 件（有効 ${mods.filter(m => m.enabled).length} 件）・このPCにあるもの ${have} 件${d.missing.length ? `・足りないもの ${d.missing.length} 件` : ''}
+  const gone = d.missing.filter(id => unavailable(id)); d.missing = d.missing.filter(id => !unavailable(id));
+  const goneAll = mods.filter(m => unavailable(m.id) && !g.items.some(i => i.id === m.id && i.installed));
+  const summary = `<p class="hint">このプロファイル: ワークショップのアイテム ${mods.length} 件（有効 ${mods.filter(m => m.enabled).length} 件）・このPCにあるもの ${have} 件${d.missing.length ? `・足りないもの ${d.missing.length} 件` : ''}${goneAll.length ? `・<b class="gone">Steam で見つからないもの ${goneAll.length} 件</b>` : ''}
     ${g.adapter ? '<br>※ 1 つのアイテムに複数の MOD が入っていることがあるため、ゲーム内の MOD 数とは一致しないことがあります。' : ''}</p>`;
   $('#diff-body').innerHTML = summary + (none ? '<p>今の状態と同じです。適用しても何も変わりません。</p>' : `
     ${d.turnOn.length ? `<div class="sect-title">有効になる（${d.turnOn.length}）</div><ul class="difflist">${list(d.turnOn, 'on')}</ul>` : ''}
     ${d.turnOff.length ? `<div class="sect-title">無効になる（${d.turnOff.length}）</div><ul class="difflist">${list(d.turnOff, 'off')}</ul>` : ''}
     ${d.missing.length ? `<div class="sect-title">インストールされていない（${d.missing.length}）</div><ul class="difflist">${list(d.missing, 'miss')}</ul><p class="hint">適用後に「まとめて購読」できます。</p>` : ''}
+    ${gone.length ? `<div class="sect-title gone">Steam で見つからない（${gone.length}）</div><ul class="difflist">${gone.map(id => `<li class="miss">${esc(titleOf({ id }))} <small class="hint">— ${unavailReason(id)}</small></li>`).join('')}</ul><p class="hint">これらは入手できないため、適用しても MOD の数が ${gone.length} 件少なくなります。</p>` : ''}
     ${d.orderChanged ? '<p class="hint">ロード順も変わります。</p>' : ''}`);
   $('#diff-apply').dataset.name = name;
   $('#diff-modal').classList.remove('hidden');
@@ -563,6 +566,8 @@ const profWait = (() => { try { return JSON.parse(localStorage.getItem('wsm-prof
 const saveProfWait = () => localStorage.setItem('wsm-prof-wait', JSON.stringify(profWait));
 let profWaitTimer = null, profWaitBusy = false;
 function waitForInstall(appid, ids) {
+  ids = ids.filter(id => !unavailable(id));
+  if (!ids.length) return;
   profWait[appid] = [...new Set([...(profWait[appid] || []), ...ids])];
   saveProfWait(); scheduleProfWait(3000);
 }

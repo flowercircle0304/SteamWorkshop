@@ -34,7 +34,7 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # exe化時: 同梱ファイルは一時展開先、設定データはexeの隣に置く
 ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
 STATIC = (Path(getattr(sys, "_MEIPASS", ROOT)) / "static").resolve()
-VERSION = "1.6.2"
+VERSION = "1.6.3"
 APP_NAME = "Workshop Manager"
 # 設定の保存先: exe の隣に data フォルダがあればそこ（ポータブル利用）、無ければ %APPDATA%\WorkshopManager
 if not FROZEN or (ROOT / "data").is_dir() or not os.environ.get("APPDATA"):
@@ -299,7 +299,9 @@ def fetch_meta(ids: list[str], force: bool = False) -> dict:
             iid = str(d.get("publishedfileid"))
             meta_cache[iid] = {
                 "ok": d.get("result") == 1,
-                "title": d.get("title"),
+                "result": d.get("result"),
+                "banned": bool(d.get("banned")),
+                "title": d.get("title") or (meta_cache.get(iid) or {}).get("title"),
                 "description": d.get("description", ""),
                 "preview": d.get("preview_url"),
                 "creator": d.get("creator"),
@@ -527,8 +529,23 @@ def clean_mods(mods) -> list[dict]:
         iid = str(m.get("id", "")) if isinstance(m, dict) else ""
         if iid.isdigit() and iid not in seen:
             seen.add(iid)
-            out.append({"id": iid, "enabled": bool(m.get("enabled", True))})
+            e = {"id": iid, "enabled": bool(m.get("enabled", True))}
+            t = m.get("title")
+            if isinstance(t, str) and t.strip():
+                e["title"] = t.strip()[:200]
+            out.append(e)
     return out
+
+
+def known_title(g: dict, iid: str) -> str | None:
+    t = (meta_cache.get(iid) or {}).get("title")
+    if t:
+        return t
+    for p in g.get("profiles", {}).values():
+        for m in p.get("mods") or []:
+            if m.get("id") == iid and m.get("title"):
+                return m["title"]
+    return None
 
 
 def make_profile(mods: list[dict], **extra) -> dict:
@@ -558,8 +575,14 @@ def r_profile(b):
         raise ValueError("プロファイル名が空です")
     if action == "save":
         ids = [str(i) for i in b.get("mods") or g["order"]]
-        g["profiles"][name] = make_profile([{"id": i, "enabled": i not in g["disabled"]} for i in ids],
-                                           customOrder=bool(g.get("orderCustom")))
+        mods = []
+        for i in ids:
+            m = {"id": i, "enabled": i not in g["disabled"]}
+            t = known_title(g, i)
+            if t:
+                m["title"] = t
+            mods.append(m)
+        g["profiles"][name] = make_profile(mods, customOrder=bool(g.get("orderCustom")))
     elif action == "apply":
         p = g["profiles"].get(name)
         if not p:
